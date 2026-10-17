@@ -1,0 +1,22 @@
+// Rule 06: Scheduled task created with a suspicious command
+// MITRE: Persistence / T1053.005 (Scheduled Task)
+// Severity: Medium
+// Schedule: every 1 h, lookback 1 h
+// Entities: SubjectUserName -> Account
+// Tuning: in the lab, the only 4698 was the OneDrive Standalone Update Task, created when the first
+//   user profile logged in. A naive 4698 rule fires on it, so tasks under \Microsoft\ and OneDrive are excluded
+//   and the rule alerts when the command points at a user-writable path or a script interpreter.
+// NOTE: TaskContent is XML-escaped inside EventData, so the Command extraction may need adjusting.
+//   In the lab an unescaped <Command> regex returned empty. Verify on a real 4698 before saving.
+// Status: DRAFT - UNTESTED.
+let lookback = 1h;
+SecurityEvent
+| where TimeGenerated > ago(lookback)
+| where EventID == 4698
+| extend TaskName = extract(@'Name="TaskName">([^<]+)<', 1, EventData),
+         Command = extract(@'&lt;Command&gt;([^&]+)&lt;/Command&gt;', 1, EventData),
+         Arguments = extract(@'&lt;Arguments&gt;([^&]+)&lt;/Arguments&gt;', 1, EventData)
+| where TaskName !startswith @"\Microsoft\" and TaskName !has "OneDrive"
+| where isempty(Command)
+     or Command has_any ("AppData", "Temp", "ProgramData", "powershell", "cmd.exe", "wscript", "cscript", "mshta", "rundll32")
+| project TimeGenerated, SubjectUserName, SubjectLogonId, TaskName, Command, Arguments, Computer

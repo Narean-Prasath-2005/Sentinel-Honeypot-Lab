@@ -1,0 +1,21 @@
+// Rule 07: Account lockout on a non-machine account
+// MITRE: Credential Access / T1110 (Brute Force)
+// Severity: Medium (raise to High if the same account is locked out repeatedly)
+// Schedule: every 15-30 min, lookback 1 h
+// Entities: TargetUserName -> Account, TargetDomainName -> Host/NTDomain
+// Incident grouping: one incident per TargetUserName
+// Why: Rule 02 groups by source IP per hour and missed low-and-slow guessing spread over many IPs.
+//   In the lab, azureuser was locked out 88 times (about 970 wrong passwords from 11 IPs), mostly below the per-IP threshold.
+//   Lockout (4740) is the account-side signal and does not depend on the attacker's source IP.
+// Note: 4740 carries the calling machine name, not the source IP. Correlate with 4625 (IpAddress) in the incident.
+// Status: DRAFT - to be saved and backtested (expected hits: azureuser, Administrator, DefaultAccount, WDAGUtilityAccount)
+let lookback = 1h;
+SecurityEvent
+| where TimeGenerated > ago(lookback)
+| where EventID == 4740
+| where TargetUserName !endswith "$"
+| summarize Lockouts = count(),
+            FirstSeen = min(TimeGenerated),
+            LastSeen = max(TimeGenerated)
+    by TargetUserName, TargetDomainName, Computer
+| project TargetUserName, TargetDomainName, Computer, Lockouts, FirstSeen, LastSeen

@@ -1,0 +1,14 @@
+// Rule 05: System audit policy changed by a non-machine account
+// MITRE: Defense Evasion / T1562.002 (Disable Windows Event Logging)
+// Severity: Medium
+// Schedule: every 1 h, lookback 1 h
+// Entities: SubjectUserName -> Account
+// Known benign: the operator's own auditpol hardening on Oct 7 (a burst of 4719 events by azureuser).
+//   In the lab this was confirmed against 4688 process creation records and documented as a true positive / benign.
+// Status: DRAFT - UNTESTED as a saved rule (the underlying events were observed in the data).
+let lookback = 1h;
+SecurityEvent
+| where TimeGenerated > ago(lookback)
+| where EventID == 4719
+| where SubjectUserName !endswith "$"
+| project TimeGenerated, SubjectUserName, SubjectDomainName, SubjectLogonId, Computer, Activity

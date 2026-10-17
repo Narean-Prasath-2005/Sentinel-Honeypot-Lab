@@ -1,0 +1,27 @@
+// Rule 04: High-volume failed logons from one external IP, regardless of username count
+// MITRE: Credential Access / T1110 (Brute Force)
+// Severity: Low
+// Schedule: every 30 min, lookback 1 h
+// Entities: IpAddress -> IP
+// Incident grouping: one incident per IpAddress
+// Why: Rule 01 needs 20+ distinct usernames, so a heavy attacker hammering few usernames slips under it.
+// Status: DRAFT - UNTESTED. The threshold is a placeholder; backtest on 7 days and tune before saving.
+let lookback = 1h;
+let threshold = 200;
+SecurityEvent
+| where TimeGenerated > ago(lookback)
+| where EventID == 4625 and LogonType in (3, 10)
+| where IpAddress !in ("-", "", "::1", "127.0.0.1")
+| summarize Attempts = count(),
+            DistinctUsers = dcount(TargetUserName),
+            FirstSeen = min(TimeGenerated),
+            LastSeen = max(TimeGenerated)
+    by IpAddress
+| where Attempts >= threshold
+
+// Backtest:
+// SecurityEvent
+// | where TimeGenerated > ago(7d) and EventID == 4625 and LogonType in (3, 10)
+// | summarize Attempts = count(), DistinctUsers = dcount(TargetUserName) by IpAddress, Hour = bin(TimeGenerated, 1h)
+// | where Attempts >= 200
+// | order by Hour asc
