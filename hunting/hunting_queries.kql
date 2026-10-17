@@ -1,0 +1,92 @@
+// Hunting queries used during the investigation.
+// TIP: the time picker in Sentinel Logs overrides ago() in the query. Set it to the range you want.
+
+// ---- 1. Telemetry health: is data continuous? ----
+SecurityEvent
+| where TimeGenerated > ago(7d)
+| summarize Events = count(), Failed = countif(EventID == 4625) by bin(TimeGenerated, 6h)
+| order by TimeGenerated asc;
+
+// ---- 2. Event inventory: what was actually collected ----
+SecurityEvent
+| where TimeGenerated > ago(7d)
+| summarize Count = count(), First = min(TimeGenerated), Last = max(TimeGenerated) by EventID, Activity
+| order by Count desc;
+
+// ---- 3. Top attackers by failed logons, with distinct usernames ----
+SecurityEvent
+| where TimeGenerated > ago(7d) and EventID == 4625
+| summarize Attempts = count(), Usernames = dcount(TargetUserName),
+            First = min(TimeGenerated), Last = max(TimeGenerated) by IpAddress
+| order by Attempts desc
+| take 15;
+
+// ---- 4. Any successful network/RDP logon from outside? (key question) ----
+SecurityEvent
+| where TimeGenerated > ago(7d) and EventID == 4624 and LogonType in (3, 10)
+| where IpAddress !in ("-", "", "::1", "127.0.0.1")
+| summarize Logons = count(), Accounts = make_set(Account), Last = max(TimeGenerated) by IpAddress
+| order by Logons desc;
+
+// ---- 5. Operator's own RDP sessions (separate from attackers) ----
+// NLA logs two Type 3 logons then a Type 10 (new session) or Type 7 (reconnect)
+SecurityEvent
+| where TimeGenerated > ago(7d) and EventID == 4624 and Account has "azureuser"
+| project TimeGenerated, Account, LogonType, IpAddress, LogonProcessName, TargetLogonId
+| order by TimeGenerated asc;
+
+// ---- 6. Real-username attempts and lockouts ----
+SecurityEvent
+| where TimeGenerated > ago(7d)
+| where EventID in (4625, 4740) and (TargetUserName =~ "azureuser" or Account has "azureuser")
+| summarize Count = count(), First = min(TimeGenerated), Last = max(TimeGenerated) by EventID, IpAddress, Status, SubStatus
+| order by Count desc;
+
+// ---- 7. Post-compromise indicators (expect nothing except the operator's own actions) ----
+SecurityEvent
+| where TimeGenerated > ago(7d)
+| where EventID in (4720, 4722, 4724, 4732, 4697, 4698, 1102, 4719)
+| project TimeGenerated, EventID, Activity, SubjectUserName, TargetUserName;
+
+// ---- 8. What did the operator session run? (validate against own commands) ----
+SecurityEvent
+| where TimeGenerated between (datetime(2026-10-07T03:00:00Z) .. datetime(2026-10-07T04:15:00Z))
+| where EventID == 4688 and SubjectUserName =~ "azureuser"
+| project TimeGenerated, NewProcessName, CommandLine
+| order by TimeGenerated asc;
+
+// ---- 9. Did a noisy IP ever succeed? ----
+let noisy = SecurityEvent
+    | where TimeGenerated > ago(7d) and EventID == 4625
+    | summarize F = count() by IpAddress
+    | where F > 100 | project IpAddress;
+SecurityEvent
+| where TimeGenerated > ago(7d) and EventID == 4624
+| where IpAddress in (noisy)
+| project TimeGenerated, IpAddress, Account, LogonType, AuthenticationPackageName
+| order by TimeGenerated asc;
+
+// ---- 10. Anonymous logon session length (4624 -> 4634) ----
+let s = SecurityEvent
+    | where TimeGenerated > ago(7d) and EventID == 4624 and Account has "ANONYMOUS LOGON"
+    | project LogonTime = TimeGenerated, TargetLogonId, IpAddress;
+SecurityEvent
+| where TimeGenerated > ago(7d) and EventID == 4634
+| join kind=inner s on TargetLogonId
+| where TimeGenerated between (LogonTime .. LogonTime + 1h)
+| project LogonTime, LogoffTime = TimeGenerated, Duration = TimeGenerated - LogonTime, IpAddress;
+
+// ---- 11. Ingestion volume (cost) ----
+Usage
+| where TimeGenerated > ago(7d) and IsBillable == true
+| summarize GB = sum(Quantity) / 1000 by DataType, bin(TimeGenerated, 1d)
+| order by TimeGenerated desc;
+
+// ---- 12. GeoIP for the workbook map (native, no API key) ----
+// City-level accuracy is unreliable - report country only.
+SecurityEvent
+| where EventID == 4625 and LogonType == 3
+| where IpAddress !in ("-", "", "::1", "127.0.0.1")
+| extend geo = geo_info_from_ip_address(IpAddress)
+| extend Country = tostring(geo.country), Lat = todouble(geo.latitude), Lon = todouble(geo.longitude)
+| summarize Attempts = count() by IpAddress, Country, Lat, Lon;
